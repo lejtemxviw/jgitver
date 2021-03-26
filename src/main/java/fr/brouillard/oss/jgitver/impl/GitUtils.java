@@ -63,6 +63,10 @@ public class GitUtils {
                 .collect(Collectors.toList());
     }
 
+    public static boolean tagOf(Ref tag, ObjectId id) {
+        return id != null && (id.equals(tag.getObjectId()) || id.equals(tag.getPeeledObjectId()));
+    }
+
     /**
      * Checks that underlying repository is dirty (modified with uncommitted changes).
      * @return true if the underlying repository is dirty, false otherwise

@@ -16,10 +16,11 @@
 package fr.brouillard.oss.jgitver.impl.metadata;
 
 import java.util.HashMap;
+import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import java.util.StringJoiner;
 
 import org.eclipse.jgit.lib.Ref;
 
@@ -35,10 +36,14 @@ public class MetadataHolder implements MetadataProvider, MetadataRegistrar {
     public void registerMetadata(Metadatas meta, String value) {
         metadataValues.put(meta, value);
     }
-    
-    public void registerMetadataTags(Metadatas meta, Stream<Ref> tags) {
-        String concatenatedTags = tags.map(GitUtils::tagNameFromRef).collect(Collectors.joining(","));
-        metadataValues.put(meta, concatenatedTags);
+
+    public void registerMetadataTags(Metadatas meta, List<Ref> tags) {
+        StringJoiner concatenatedTags = new StringJoiner(",");
+        ListIterator<Ref> i = tags.listIterator(tags.size());
+        while (i.hasPrevious()) {
+            concatenatedTags.add(GitUtils.tagNameFromRef(i.previous()));
+        }
+        metadataValues.put(meta, concatenatedTags.toString());
     }
 
     @Override
