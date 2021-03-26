@@ -22,7 +22,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Date;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
@@ -33,6 +32,7 @@ import java.util.Optional;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import fr.brouillard.oss.jgitver.BranchingPolicy;
 import fr.brouillard.oss.jgitver.BranchingPolicy.BranchNameTransformations;
@@ -423,83 +423,68 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
             int maxDepth,
             VersionStrategy strategy
     ) throws Exception {
-        List<Ref> reachableTags = filterReachableTags(headId, allVersionTags);
+        Stream<Ref> reachableTags = filterReachableTags(headId, allVersionTags);
 
         // see https://github.com/jgitver/jgitver/issues/73
         // light tags do not have a date information
         // we keep only annotated ones
-        if (LookupPolicy.LATEST.equals(lookupPolicy)) {
+        if (lookupPolicy == LookupPolicy.LATEST) {
             reachableTags = keepOnlyAnnotatedTags(reachableTags);
         }
 
-        if (reachableTags.isEmpty()) {
-            return null;
-        }
-
-        ObjectId baseCommitId = findBaseCommitId(headId, reachableTags, lookupPolicy, strategy);
-
-        if (headId.getName().equals(baseCommitId.getName())) {
-            return new Commit(baseCommitId, 0, tagsOf(normals, baseCommitId), tagsOf(lights, baseCommitId));
-        } else {
-            DistanceCalculator distanceCalculator = DistanceCalculator.create(headId, repository, maxDepth);
-            return distanceCalculator.distanceTo(baseCommitId)
+        return findBaseCommitId(headId, reachableTags, lookupPolicy, strategy)
+          .flatMap(baseCommitId -> {
+              if (headId.getName().equals(baseCommitId.getName())) {
+                  return Optional.of(new Commit(baseCommitId, 0, tagsOf(normals, baseCommitId), tagsOf(lights, baseCommitId)));
+              } else {
+                  DistanceCalculator distanceCalculator = DistanceCalculator.create(headId, repository, maxDepth);
+                  return distanceCalculator.distanceTo(baseCommitId)
                     .map(distance ->
-                        new Commit(baseCommitId, distance, tagsOf(normals, baseCommitId), tagsOf(lights, baseCommitId))
-                    ).orElse(null);
-        }
+                           new Commit(baseCommitId, distance, tagsOf(normals, baseCommitId), tagsOf(lights, baseCommitId))
+                    );
+              }
+          }).orElse(null);
+
     }
 
-    private ArrayList<Ref> keepOnlyAnnotatedTags(List<Ref> reachableTags) {
-        return reachableTags
-                .stream()
-                .filter(r -> GitUtils.isAnnotated(r))
-                .collect(Collectors.toCollection(ArrayList<Ref>::new));
+    private Stream<Ref> keepOnlyAnnotatedTags(Stream<Ref> reachableTags) {
+        return reachableTags.filter(GitUtils::isAnnotated);
     }
 
-    private ObjectId findBaseCommitId(ObjectId headId, List<Ref> reachableTags, LookupPolicy lookupPolicy, VersionStrategy strategy) {
+    private Optional<ObjectId> findBaseCommitId(ObjectId headId, Stream<Ref> reachableTags, LookupPolicy lookupPolicy, VersionStrategy strategy) {
         switch (lookupPolicy) {
             case MAX:
-                Comparator<Ref> versionTagComparator = (r1, r2) -> {
-                    Version v1 = strategy.versionFromTag(r1);
-                    Version v2 = strategy.versionFromTag(r2);
-
-                    return v1.compareTo(v2);
-                };
-
-                return reachableTags.stream()
-                        .max(versionTagComparator)
-                        .map(refToObjectIdFunction)
-                        .orElseThrow(() -> new IllegalStateException(String.format("could not find max version tag")));
+                return reachableTags
+                        .max(Comparator.comparing(strategy::versionFromTag))
+                        .map(refToObjectIdFunction);
             case LATEST:
-                return latestObjectIdOfTags(reachableTags, refToObjectIdFunction);
+                return latestObjectIdOfTags(reachableTags).map(refToObjectIdFunction);
             case NEAREST:
                 DistanceCalculator dc = DistanceCalculator.create(headId, repository);
 
-                Map<Integer, List<Ref>> tagsByDistance = reachableTags.stream()
+                Map<Integer, List<Ref>> tagsByDistance = reachableTags
                         .collect(Collectors.groupingBy(r -> dc.distanceTo(refToObjectIdFunction.apply(r)).get()));
 
                 Integer minimumDistance = Collections.min(tagsByDistance.keySet());
                 List<Ref> tagsAtMinimumDistance = tagsByDistance.get(minimumDistance);
 
                 if (tagsAtMinimumDistance.size() == 1) {
-                    return refToObjectIdFunction.apply(tagsAtMinimumDistance.get(0));
+                    return Optional.of(refToObjectIdFunction.apply(tagsAtMinimumDistance.get(0)));
                 } else {
                     // we take the most recent one among those at the same distance
-                    return latestObjectIdOfTags(tagsAtMinimumDistance, refToObjectIdFunction);
+                    return latestObjectIdOfTags(tagsAtMinimumDistance.stream()).map(refToObjectIdFunction);
                 }
             default:
                 throw new IllegalStateException(String.format("[%s] lookup policy is not implmented", lookupPolicy));
         }
     }
 
-    private ObjectId latestObjectIdOfTags(List<Ref> reachableTags, Function<Ref, ObjectId> refToObjectIdFunction) {
+    private Optional<Ref> latestObjectIdOfTags(Stream<Ref> reachableTags) {
         try (TagDateExtractor dateExtractor = new TagDateExtractor(repository)) {
-            return reachableTags.stream()
-                    .map(r -> new Pair<Ref, Date>(r, dateExtractor.dateOfRef(r)))
-                    .max(Comparator.comparing(p -> ((Date) p.getRight())))
-                    .map(p -> (Ref) p.getLeft())
-                    .map(refToObjectIdFunction)
-                    .orElseThrow(() -> new IllegalStateException(String.format("could not find most recent tag")));
+            return reachableTags
+                    .map(r -> new Pair<>(r, dateExtractor.dateOfRef(r)))
+                    .max(Comparator.comparing(Pair::getRight))
+                    .map(Pair::getLeft);
         }
     }
 
@@ -507,7 +492,7 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
      * Filters the given list of tags based on their reachability starting from the given commit.
      * It returns a new non null List.
      */
-    private List<Ref> filterReachableTags(ObjectId headId, List<Ref> allVersionTags) throws IOException {
+    private Stream<Ref> filterReachableTags(ObjectId headId, List<Ref> allVersionTags) throws IOException {
         List<Ref> filtered = new ArrayList<>(allVersionTags.size());
 
         // Pre-calculate multimap of commit -> [tags] (O(N*M) -> O(N))
@@ -524,7 +509,7 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
             }
         }
 
-        return filtered;
+        return filtered.stream();
     }
 
     private Ref peel(Ref tag) {
