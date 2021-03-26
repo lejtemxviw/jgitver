@@ -29,6 +29,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BinaryOperator;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -451,12 +452,36 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
         return reachableTags.filter(GitUtils::isAnnotated);
     }
 
+    private static <T,C extends Comparable<C>> BinaryOperator<T> statefulMax(Function<T, C> comparable) {
+        return new BinaryOperator<T>() {
+            private C maxValue;
+            @Override
+            public T apply(T t1, T t2) {
+                C c1;
+                if (maxValue==null) {
+                    c1 = comparable.apply(t1);
+                } else {
+                    c1 = maxValue;
+                }
+
+                C c2 = comparable.apply(t2);
+                if (c1.compareTo(c2) >= 0) {
+                    maxValue = c1;
+                    return t1;
+                } else {
+                    maxValue = c2;
+                    return t2;
+                }
+            }
+        };
+    }
+
     private Optional<ObjectId> findBaseCommitId(ObjectId headId, Stream<Ref> reachableTags, LookupPolicy lookupPolicy, VersionStrategy strategy) {
         switch (lookupPolicy) {
             case MAX:
                 return reachableTags
-                        .max(Comparator.comparing(strategy::versionFromTag))
-                        .map(refToObjectIdFunction);
+                  .reduce(statefulMax(strategy::versionFromTag))
+                  .map(refToObjectIdFunction);
             case LATEST:
                 return latestObjectIdOfTags(reachableTags).map(refToObjectIdFunction);
             case NEAREST:
@@ -481,10 +506,7 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
 
     private Optional<Ref> latestObjectIdOfTags(Stream<Ref> reachableTags) {
         try (TagDateExtractor dateExtractor = new TagDateExtractor(repository)) {
-            return reachableTags
-                    .map(r -> new Pair<>(r, dateExtractor.dateOfRef(r)))
-                    .max(Comparator.comparing(Pair::getRight))
-                    .map(Pair::getLeft);
+            return reachableTags.reduce(statefulMax(dateExtractor::dateOfRef));
         }
     }
 

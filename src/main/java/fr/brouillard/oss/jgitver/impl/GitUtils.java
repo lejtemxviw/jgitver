@@ -43,9 +43,9 @@ import org.eclipse.jgit.revwalk.RevSort;
 
 public class GitUtils {
     public static String tagNameFromRef(Ref tag) {
-        return tag.getName().replace("refs/tags/", "");
+        return tag.getName().substring(10); // Remove "refs/tags/"
     }
-    
+
     public static boolean isAnnotated(Ref ref) {
         return ref != null && ref.getPeeledObjectId() != null;
     }
