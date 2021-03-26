@@ -23,18 +23,14 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
-import java.util.Deque;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -58,7 +54,6 @@ import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
 import static fr.brouillard.oss.jgitver.impl.GitUtils.tagsOf;
-import static fr.brouillard.oss.jgitver.impl.Lambdas.as;
 
 public class GitVersionCalculatorImpl implements GitVersionCalculator {
     private MetadataHolder metadatas;
@@ -513,15 +508,19 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
      * It returns a new non null List.
      */
     private List<Ref> filterReachableTags(ObjectId headId, List<Ref> allVersionTags) throws IOException {
-        List<Ref> filtered = new ArrayList<>();
+        List<Ref> filtered = new ArrayList<>(allVersionTags.size());
+
+        // Pre-calculate multimap of commit -> [tags] (O(N*M) -> O(N))
+        Map<String, List<Ref>> taggedCommits = allVersionTags.stream().collect(Collectors.groupingBy(r -> refToObjectIdFunction.apply(r).getName()));
 
         try (RevWalk walk = new RevWalk(repository)) {
             walk.markStart(walk.parseCommit(headId));
 
             for (RevCommit revCommit : walk) {
-                ObjectId commitId = revCommit.getId();
-                Predicate<Ref> tagCorresponds = r -> commitId.getName().equals(refToObjectIdFunction.apply(r).getName());
-                allVersionTags.stream().filter(tagCorresponds).forEach(filtered::add);
+                List<Ref> tagsForThisCommit = taggedCommits.get(revCommit.getId().getName());
+                if (tagsForThisCommit != null) {
+                    filtered.addAll(tagsForThisCommit);
+                }
             }
         }
 
