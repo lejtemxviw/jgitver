@@ -424,14 +424,9 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
             int maxDepth,
             VersionStrategy strategy
     ) throws Exception {
-        Stream<Ref> reachableTags = filterReachableTags(headId, allVersionTags);
-
         // see https://github.com/jgitver/jgitver/issues/73
         // light tags do not have a date information
-        // we keep only annotated ones
-        if (lookupPolicy == LookupPolicy.LATEST) {
-            reachableTags = keepOnlyAnnotatedTags(reachableTags);
-        }
+        Stream<Ref> reachableTags = filterReachableTags(headId, lookupPolicy == LookupPolicy.LATEST ? normals : allVersionTags);
 
         return findBaseCommitId(headId, reachableTags, lookupPolicy, strategy)
           .flatMap(baseCommitId -> {
@@ -446,10 +441,6 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
               }
           }).orElse(null);
 
-    }
-
-    private Stream<Ref> keepOnlyAnnotatedTags(Stream<Ref> reachableTags) {
-        return reachableTags.filter(GitUtils::isAnnotated);
     }
 
     private static <T,C extends Comparable<C>> BinaryOperator<T> statefulMax(Function<T, C> comparable) {
