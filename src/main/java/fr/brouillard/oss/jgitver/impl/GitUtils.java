@@ -43,9 +43,9 @@ import org.eclipse.jgit.revwalk.RevSort;
 
 public class GitUtils {
     public static String tagNameFromRef(Ref tag) {
-        return tag.getName().replace("refs/tags/", "");
+        return tag.getName().substring(10); // Remove "refs/tags/"
     }
-    
+
     public static boolean isAnnotated(Ref ref) {
         return ref != null && ref.getPeeledObjectId() != null;
     }
@@ -61,6 +61,10 @@ public class GitUtils {
     public static List<Ref> tagsOf(List<Ref> tags, final ObjectId id) {
         return tags.stream().filter(ref -> id.equals(ref.getObjectId()) || id.equals(ref.getPeeledObjectId()))
                 .collect(Collectors.toList());
+    }
+
+    public static boolean tagOf(Ref tag, ObjectId id) {
+        return id != null && (id.equals(tag.getObjectId()) || id.equals(tag.getPeeledObjectId()));
     }
 
     /**

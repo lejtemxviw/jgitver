@@ -15,9 +15,6 @@
  */
 package fr.brouillard.oss.jgitver.impl;
 
-import static fr.brouillard.oss.jgitver.impl.GitUtils.tagsOf;
-import static fr.brouillard.oss.jgitver.impl.Lambdas.as;
-
 import java.io.File;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
@@ -25,21 +22,29 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Date;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
+import java.util.function.BinaryOperator;
 import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import fr.brouillard.oss.jgitver.BranchingPolicy;
+import fr.brouillard.oss.jgitver.BranchingPolicy.BranchNameTransformations;
+import fr.brouillard.oss.jgitver.GitVersionCalculator;
+import fr.brouillard.oss.jgitver.LookupPolicy;
+import fr.brouillard.oss.jgitver.ScriptType;
+import fr.brouillard.oss.jgitver.Strategies;
+import fr.brouillard.oss.jgitver.Version;
+import fr.brouillard.oss.jgitver.impl.metadata.MetadataHolder;
+import fr.brouillard.oss.jgitver.metadata.Metadatas;
+import fr.brouillard.oss.jgitver.metadata.TagType;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.errors.NoWorkTreeException;
 import org.eclipse.jgit.lib.ObjectId;
@@ -49,17 +54,7 @@ import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
-
-import fr.brouillard.oss.jgitver.BranchingPolicy;
-import fr.brouillard.oss.jgitver.BranchingPolicy.BranchNameTransformations;
-import fr.brouillard.oss.jgitver.GitVersionCalculator;
-import fr.brouillard.oss.jgitver.LookupPolicy;
-import fr.brouillard.oss.jgitver.Strategies;
-import fr.brouillard.oss.jgitver.ScriptType;
-import fr.brouillard.oss.jgitver.Version;
-import fr.brouillard.oss.jgitver.impl.metadata.MetadataHolder;
-import fr.brouillard.oss.jgitver.metadata.Metadatas;
-import fr.brouillard.oss.jgitver.metadata.TagType;
+import static fr.brouillard.oss.jgitver.impl.GitUtils.tagsOf;
 
 public class GitVersionCalculatorImpl implements GitVersionCalculator {
     private MetadataHolder metadatas;
@@ -288,28 +283,68 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
                 metadatas.registerMetadata(Metadatas.DIRTY_TEXT, "dirty");
             }
 
-            // retrieve all tags matching a version, and get all info for each of them
-            List<Ref> allTags = git.tagList().call().stream().map(this::peel)
-                    .collect(Collectors.toCollection(ArrayList::new));
-            // let's have tags sorted from most recent to oldest
-            Collections.reverse(allTags);
-
-            metadatas.registerMetadataTags(Metadatas.ALL_TAGS, allTags.stream());
-            metadatas.registerMetadataTags(Metadatas.ALL_ANNOTATED_TAGS, allTags.stream().filter(GitUtils::isAnnotated));
-            metadatas.registerMetadataTags(Metadatas.ALL_LIGHTWEIGHT_TAGS, allTags.stream().filter(as(GitUtils::isAnnotated).negate()));
-
-            List<Ref> allVersionTags = allTags.stream()
-                    .filter(strategy::isVersionTag)
-                    .collect(Collectors.toCollection(ArrayList::new));
-
-            List<Ref> normals = allVersionTags.stream().filter(GitUtils::isAnnotated).collect(Collectors.toList());
-            List<Ref> lights = allVersionTags.stream().filter(as(GitUtils::isAnnotated).negate()).collect(Collectors.toList());
-
-            metadatas.registerMetadataTags(Metadatas.ALL_VERSION_TAGS, allVersionTags.stream());
-            metadatas.registerMetadataTags(Metadatas.ALL_VERSION_ANNOTATED_TAGS, normals.stream());
-            metadatas.registerMetadataTags(Metadatas.ALL_VERSION_LIGHTWEIGHT_TAGS, lights.stream());
-
             ObjectId rootId = repository.resolve("HEAD");
+
+            List<Ref> rawTags = git.tagList().call();
+
+            List<Ref> ALL_TAGS = new ArrayList<>(rawTags.size());
+            List<Ref> ALL_ANNOTATED_TAGS = new ArrayList<>(rawTags.size());
+            List<Ref> ALL_LIGHTWEIGHT_TAGS = new ArrayList<>(rawTags.size());
+            List<Ref> ALL_VERSION_TAGS = new ArrayList<>(rawTags.size());
+            List<Ref> ALL_VERSION_ANNOTATED_TAGS = new ArrayList<>(rawTags.size());
+            List<Ref> ALL_VERSION_LIGHTWEIGHT_TAGS = new ArrayList<>(rawTags.size());
+            List<Ref> HEAD_TAGS = new ArrayList<>();
+            List<Ref> HEAD_ANNOTATED_TAGS = new ArrayList<>();
+            List<Ref> HEAD_LIGHTWEIGHT_TAGS = new ArrayList<>();
+            List<Ref> HEAD_VERSION_TAGS = new ArrayList<>();
+            List<Ref> HEAD_VERSION_ANNOTATED_TAGS = new ArrayList<>();
+            List<Ref> HEAD_VERSION_LIGHTWEIGHT_TAGS = new ArrayList<>();
+
+            // retrieve all tags matching a version, and get all info for each of them
+            for (Ref rawTag : rawTags) {
+                Ref r = peel(rawTag);
+                ALL_TAGS.add(r);
+                switch ((GitUtils.tagOf(r, rootId) ? 4 : 0) + (strategy.isVersionTag(r) ? 2 : 0) + (GitUtils.isAnnotated(r) ? 1 : 0)) {
+                case 0b110:
+                    HEAD_TAGS.add(r);
+                    HEAD_VERSION_TAGS.add(r);
+                    HEAD_LIGHTWEIGHT_TAGS.add(r);
+                    HEAD_VERSION_LIGHTWEIGHT_TAGS.add(r);
+                case 0b010:
+                    ALL_VERSION_TAGS.add(r);
+                    ALL_VERSION_LIGHTWEIGHT_TAGS.add(r);
+                case 0b000:
+                    ALL_LIGHTWEIGHT_TAGS.add(r);
+                    break;
+
+                case 0b111:
+                    HEAD_TAGS.add(r);
+                    HEAD_VERSION_TAGS.add(r);
+                    HEAD_ANNOTATED_TAGS.add(r);
+                    HEAD_VERSION_ANNOTATED_TAGS.add(r);
+                case 0b011:
+                    ALL_VERSION_TAGS.add(r);
+                    ALL_VERSION_ANNOTATED_TAGS.add(r);
+                case 0b001:
+                    ALL_ANNOTATED_TAGS.add(r);
+                    break;
+
+                case 0b101:
+                    HEAD_ANNOTATED_TAGS.add(r);
+                    ALL_ANNOTATED_TAGS.add(r);
+                case 0b100:
+                    HEAD_TAGS.add(r);
+                    break;
+                }
+            };
+
+            metadatas.registerMetadataTags(Metadatas.ALL_TAGS, ALL_TAGS);
+            metadatas.registerMetadataTags(Metadatas.ALL_ANNOTATED_TAGS, ALL_ANNOTATED_TAGS);
+            metadatas.registerMetadataTags(Metadatas.ALL_LIGHTWEIGHT_TAGS, ALL_LIGHTWEIGHT_TAGS);
+
+            metadatas.registerMetadataTags(Metadatas.ALL_VERSION_TAGS, ALL_VERSION_TAGS);
+            metadatas.registerMetadataTags(Metadatas.ALL_VERSION_ANNOTATED_TAGS, ALL_VERSION_ANNOTATED_TAGS);
+            metadatas.registerMetadataTags(Metadatas.ALL_VERSION_LIGHTWEIGHT_TAGS, ALL_VERSION_LIGHTWEIGHT_TAGS);
 
             // handle a call on an empty git repository
             if (rootId == null) {
@@ -326,27 +361,20 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
                 metadatas.registerMetadata(Metadatas.HEAD_COMMIT_DATETIME, dtfmt.format(commitInfo.getWhen()));
             });
 
-            metadatas.registerMetadataTags(Metadatas.HEAD_TAGS, tagsOf(allTags, rootId).stream());
-            metadatas.registerMetadataTags(Metadatas.HEAD_ANNOTATED_TAGS,
-                    tagsOf(allTags.stream().filter(GitUtils::isAnnotated).collect(Collectors.toList()), rootId)
-                            .stream());
-            metadatas.registerMetadataTags(Metadatas.HEAD_LIGHTWEIGHT_TAGS,
-                    tagsOf(allTags.stream().filter(as(GitUtils::isAnnotated).negate()).collect(Collectors.toList()),
-                            rootId).stream());
-            metadatas.registerMetadataTags(Metadatas.HEAD_VERSION_TAGS, tagsOf(allVersionTags, rootId).stream());
-            metadatas.registerMetadataTags(Metadatas.HEAD_VERSION_ANNOTATED_TAGS,
-                    tagsOf(allVersionTags.stream().filter(GitUtils::isAnnotated).collect(Collectors.toList()), rootId)
-                            .stream());
-            metadatas.registerMetadataTags(Metadatas.HEAD_VERSION_LIGHTWEIGHT_TAGS,
-                    tagsOf(allVersionTags.stream().filter(as(GitUtils::isAnnotated).negate()).collect(Collectors.toList()),
-                            rootId).stream());
+            metadatas.registerMetadataTags(Metadatas.HEAD_TAGS, HEAD_TAGS);
+            metadatas.registerMetadataTags(Metadatas.HEAD_ANNOTATED_TAGS, HEAD_ANNOTATED_TAGS);
+            metadatas.registerMetadataTags(Metadatas.HEAD_LIGHTWEIGHT_TAGS, HEAD_LIGHTWEIGHT_TAGS);
+
+            metadatas.registerMetadataTags(Metadatas.HEAD_VERSION_TAGS, HEAD_VERSION_TAGS);
+            metadatas.registerMetadataTags(Metadatas.HEAD_VERSION_ANNOTATED_TAGS, HEAD_VERSION_ANNOTATED_TAGS);
+            metadatas.registerMetadataTags(Metadatas.HEAD_VERSION_LIGHTWEIGHT_TAGS, HEAD_VERSION_LIGHTWEIGHT_TAGS);
 
             metadatas.registerMetadata(Metadatas.GIT_SHA1_FULL, rootId.getName());
             metadatas.registerMetadata(Metadatas.GIT_SHA1_8, rootId.getName().substring(0, 8));
             
-            Commit head = new Commit(rootId, 0, tagsOf(normals, rootId), tagsOf(lights, rootId));
+            Commit head = new Commit(rootId, 0, HEAD_VERSION_ANNOTATED_TAGS, HEAD_VERSION_LIGHTWEIGHT_TAGS);
             
-            Commit baseCommit = findBaseCommitFromReachableTags(rootId, allVersionTags, normals, lights, maxDepth, strategy);
+            Commit baseCommit = findBaseCommitFromReachableTags(rootId, ALL_VERSION_TAGS, ALL_VERSION_ANNOTATED_TAGS, ALL_VERSION_LIGHTWEIGHT_TAGS, maxDepth, strategy);
 
             if (baseCommit == null) {
                 // it looks like not reachable commits from version tags were found
@@ -396,89 +424,80 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
             int maxDepth,
             VersionStrategy strategy
     ) throws Exception {
-        List<Ref> reachableTags = filterReachableTags(headId, allVersionTags);
-
         // see https://github.com/jgitver/jgitver/issues/73
         // light tags do not have a date information
-        // we keep only annotated ones
-        if (LookupPolicy.LATEST.equals(lookupPolicy)) {
-            reachableTags = keepOnlyAnnotatedTags(reachableTags);
-        }
+        Stream<Ref> reachableTags = filterReachableTags(headId, lookupPolicy == LookupPolicy.LATEST ? normals : allVersionTags);
 
-        if (reachableTags.isEmpty()) {
-            return null;
-        }
-
-        ObjectId baseCommitId = findBaseCommitId(headId, reachableTags, lookupPolicy, strategy);
-        Set<Commit> commits = new LinkedHashSet<>();
-
-        DistanceCalculator distanceCalculator = DistanceCalculator.create(headId, repository, maxDepth);
-        if (headId.getName().equals(baseCommitId.getName())) {
-            return new Commit(baseCommitId, 0, tagsOf(normals, baseCommitId), tagsOf(lights, baseCommitId));
-        } else {
-            return distanceCalculator.distanceTo(baseCommitId)
+        return findBaseCommitId(headId, reachableTags, lookupPolicy, strategy)
+          .flatMap(baseCommitId -> {
+              if (headId.getName().equals(baseCommitId.getName())) {
+                  return Optional.of(new Commit(baseCommitId, 0, tagsOf(normals, baseCommitId), tagsOf(lights, baseCommitId)));
+              } else {
+                  DistanceCalculator distanceCalculator = DistanceCalculator.create(headId, repository, maxDepth);
+                  return distanceCalculator.distanceTo(baseCommitId)
                     .map(distance ->
-                        new Commit(baseCommitId, distance, tagsOf(normals, baseCommitId), tagsOf(lights, baseCommitId))
-                    ).orElse(null);
-        }
+                           new Commit(baseCommitId, distance, tagsOf(normals, baseCommitId), tagsOf(lights, baseCommitId))
+                    );
+              }
+          }).orElse(null);
+
     }
 
-    private ArrayList<Ref> keepOnlyAnnotatedTags(List<Ref> reachableTags) {
-        return reachableTags
-                .stream()
-                .filter(r -> GitUtils.isAnnotated(r))
-                .collect(Collectors.toCollection(ArrayList<Ref>::new));
+    private static <T,C extends Comparable<C>> BinaryOperator<T> statefulMax(Function<T, C> comparable) {
+        return new BinaryOperator<T>() {
+            private C maxValue;
+            @Override
+            public T apply(T t1, T t2) {
+                C c1;
+                if (maxValue==null) {
+                    c1 = comparable.apply(t1);
+                } else {
+                    c1 = maxValue;
+                }
+
+                C c2 = comparable.apply(t2);
+                if (c1.compareTo(c2) >= 0) {
+                    maxValue = c1;
+                    return t1;
+                } else {
+                    maxValue = c2;
+                    return t2;
+                }
+            }
+        };
     }
 
-    private ObjectId findBaseCommitId(ObjectId headId, List<Ref> reachableTags, LookupPolicy lookupPolicy, VersionStrategy strategy) {
+    private Optional<ObjectId> findBaseCommitId(ObjectId headId, Stream<Ref> reachableTags, LookupPolicy lookupPolicy, VersionStrategy strategy) {
         switch (lookupPolicy) {
             case MAX:
-                Comparator<Ref> versionTagComparator = (r1, r2) -> {
-                    Version v1 = strategy.versionFromTag(r1);
-                    Version v2 = strategy.versionFromTag(r2);
-
-                    return v1.compareTo(v2);
-                };
-
-                return reachableTags.stream()
-                        .max(versionTagComparator)
-                        .map(refToObjectIdFunction)
-                        .orElseThrow(() -> new IllegalStateException(String.format("could not find max version tag")));
+                return reachableTags
+                  .reduce(statefulMax(strategy::versionFromTag))
+                  .map(refToObjectIdFunction);
             case LATEST:
-                return latestObjectIdOfTags(reachableTags, refToObjectIdFunction);
+                return latestObjectIdOfTags(reachableTags).map(refToObjectIdFunction);
             case NEAREST:
                 DistanceCalculator dc = DistanceCalculator.create(headId, repository);
 
-                Map<Integer, List<Ref>> tagsByDistance = reachableTags.stream()
+                Map<Integer, List<Ref>> tagsByDistance = reachableTags
                         .collect(Collectors.groupingBy(r -> dc.distanceTo(refToObjectIdFunction.apply(r)).get()));
 
                 Integer minimumDistance = Collections.min(tagsByDistance.keySet());
                 List<Ref> tagsAtMinimumDistance = tagsByDistance.get(minimumDistance);
 
                 if (tagsAtMinimumDistance.size() == 1) {
-                    return refToObjectIdFunction.apply(tagsAtMinimumDistance.get(0));
+                    return Optional.of(refToObjectIdFunction.apply(tagsAtMinimumDistance.get(0)));
                 } else {
                     // we take the most recent one among those at the same distance
-                    // due to https://github.com/jgitver/jgitver/issues/73
-                    // we need to keep only the annotated tags
-                    if (LookupPolicy.LATEST.equals(lookupPolicy)) {
-                        tagsAtMinimumDistance = keepOnlyAnnotatedTags(tagsAtMinimumDistance);
-                    }
-                    return latestObjectIdOfTags(tagsAtMinimumDistance, refToObjectIdFunction);
+                    return latestObjectIdOfTags(tagsAtMinimumDistance.stream()).map(refToObjectIdFunction);
                 }
             default:
                 throw new IllegalStateException(String.format("[%s] lookup policy is not implmented", lookupPolicy));
         }
     }
 
-    private ObjectId latestObjectIdOfTags(List<Ref> reachableTags, Function<Ref, ObjectId> refToObjectIdFunction) {
+    private Optional<Ref> latestObjectIdOfTags(Stream<Ref> reachableTags) {
         try (TagDateExtractor dateExtractor = new TagDateExtractor(repository)) {
-            return reachableTags.stream()
-                    .map(r -> new Pair<Ref, Date>(r, dateExtractor.dateOfRef(r)))
-                    .max(Comparator.comparing(p -> ((Date) p.getRight())))
-                    .map(p -> (Ref) p.getLeft())
-                    .map(refToObjectIdFunction)
-                    .orElseThrow(() -> new IllegalStateException(String.format("could not find most recent tag")));
+            return reachableTags.reduce(statefulMax(dateExtractor::dateOfRef));
         }
     }
 
@@ -486,20 +505,24 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
      * Filters the given list of tags based on their reachability starting from the given commit.
      * It returns a new non null List.
      */
-    private List<Ref> filterReachableTags(ObjectId headId, List<Ref> allVersionTags) throws IOException {
-        List<Ref> filtered = new ArrayList<>();
+    private Stream<Ref> filterReachableTags(ObjectId headId, List<Ref> allVersionTags) throws IOException {
+        List<Ref> filtered = new ArrayList<>(allVersionTags.size());
+
+        // Pre-calculate multimap of commit -> [tags] (O(N*M) -> O(N))
+        Map<String, List<Ref>> taggedCommits = allVersionTags.stream().collect(Collectors.groupingBy(r -> refToObjectIdFunction.apply(r).getName()));
 
         try (RevWalk walk = new RevWalk(repository)) {
             walk.markStart(walk.parseCommit(headId));
 
             for (RevCommit revCommit : walk) {
-                ObjectId commitId = revCommit.getId();
-                Predicate<Ref> tagCorresponds = r -> commitId.getName().equals(refToObjectIdFunction.apply(r).getName());
-                allVersionTags.stream().filter(tagCorresponds).forEach(filtered::add);
+                List<Ref> tagsForThisCommit = taggedCommits.get(revCommit.getId().getName());
+                if (tagsForThisCommit != null) {
+                    filtered.addAll(tagsForThisCommit);
+                }
             }
         }
 
-        return filtered;
+        return filtered.stream();
     }
 
     private Ref peel(Ref tag) {
