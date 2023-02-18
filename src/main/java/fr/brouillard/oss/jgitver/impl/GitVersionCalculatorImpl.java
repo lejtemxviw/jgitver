@@ -61,6 +61,7 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
     private Repository repository;
     private boolean mavenLike = false;
     private boolean autoIncrementPatch = false;
+    private boolean autoIncrementMinor = false;
     private boolean useDistance = true;
     private boolean useGitCommitId = false;
     private boolean useGitCommitTimestamp = false;
@@ -139,11 +140,13 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
                 case MAVEN:
                     strategy = new MavenVersionStrategy(vnc, repository, git, metadatas)
                             .setForceComputation(forceComputation)
+                            .setAutoIncrementMinor(autoIncrementMinor)
                             .setUseDirty(useDirty);
                     break;
                 case CONFIGURABLE:
                     strategy = new ConfigurableVersionStrategy(vnc, repository, git, metadatas)
                             .setAutoIncrementPatch(autoIncrementPatch)
+                            .setAutoIncrementMinor(autoIncrementMinor)
                             .setUseDistance(useDistance)
                             .setUseDirty(useDirty)
                             .setUseGitCommitId(useGitCommitId)
@@ -155,6 +158,7 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
                 case PATTERN:
                     strategy = new PatternVersionStrategy(vnc, repository, git, metadatas)
                             .setAutoIncrementPatch(autoIncrementPatch)
+                            .setAutoIncrementMinor(autoIncrementMinor)
                             .setVersionPattern(versionPattern)
                             .setTagVersionPattern(tagVersionPattern);
                     break;
@@ -223,7 +227,7 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
         if (Version.EMPTY_REPOSITORY_VERSION.equals(calculatedVersion)) {
             return false;
         }
-        return (autoIncrementPatch || strategy instanceof MavenVersionStrategy)
+        return (autoIncrementPatch || (strategy instanceof MavenVersionStrategy && !this.autoIncrementMinor))
                 && metadatas.meta(Metadatas.HEAD_VERSION_TAGS).get().isEmpty();
     }
 
@@ -257,6 +261,12 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
                             unqualifiedCalculatedVersion.getPatch() - 1
                     );
                 }
+            } else if (this.autoIncrementMinor && !unqualifiedCalculatedVersion.equals(unqualifiedBaseVersion)) {
+                unqualifiedCalculatedVersion = new Version(
+                        unqualifiedCalculatedVersion.getMajor(),
+                        unqualifiedCalculatedVersion.getMinor() - 1,
+                        unqualifiedCalculatedVersion.getPatch()
+                );
             }
 
             metadatas.registerMetadata(Metadatas.NEXT_MAJOR_VERSION, unqualifiedCalculatedVersion.incrementMajor().toString());
@@ -543,6 +553,12 @@ public class GitVersionCalculatorImpl implements GitVersionCalculator {
     @Override
     public GitVersionCalculator setAutoIncrementPatch(boolean value) {
         this.autoIncrementPatch = value;
+        return this;
+    }
+
+    @Override
+    public GitVersionCalculator setAutoIncrementMinor(boolean value) {
+        this.autoIncrementMinor = value;
         return this;
     }
 
